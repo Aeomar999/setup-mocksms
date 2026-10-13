@@ -1,0 +1,33 @@
+name: Test action
+
+on:
+  push:
+    branches: [main, 'milestone/*', 'fix/*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Use the local action
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: mocksms
+        uses: ./
+        with:
+          otp-code: '123456'
+      - name: Server answers and outputs are set
+        run: |
+          set -euo pipefail
+          test -n "${{ steps.mocksms.outputs.http-url }}"
+          curl -fsS "${{ steps.mocksms.outputs.http-url }}/api/v1/healthz"
+      - name: Send SMS and read it back
+        run: |
+          set -euo pipefail
+          base="${{ steps.mocksms.outputs.http-url }}"
+          curl -fsS -X POST "${base}/api/v1/sms" \
+            -H "X-Mocksms: true" -H "Content-Type: application/json" \
+            -d '{"from":"+15555550100","to":"+15005550006","body":"action check 482916"}'
+          code="$(curl -fsS "${base}/api/v1/otp/latest?to=%2B15005550006" -H "X-Mocksms: true" | python3 -c 'import json,sys; print(json.load(sys.stdin)["code"])')"
+          test "${code}" = "482916"
+          echo "OTP round-trip OK"

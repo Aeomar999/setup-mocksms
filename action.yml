@@ -1,0 +1,116 @@
+name: Setup mocksms
+description: Install and start the mocksms sandbox in CI, outputting its URLs
+author: mocksms contributors
+branding:
+  icon: message-square
+  color: orange
+
+inputs:
+  version:
+    description: Release tag to install (default latest)
+    required: false
+    default: latest
+  http-port:
+    description: HTTP port to serve
+    required: false
+    default: '4010'
+  smtp-port:
+    description: SMTP port to serve
+    required: false
+    default: '1025'
+  otp-code:
+    description: Fixed OTP code for deterministic assertions
+    required: false
+    default: '123456'
+  data-dir:
+    description: Data directory (default a fresh temp dir per run)
+    required: false
+    default: ''
+
+outputs:
+  http-url:
+    description: Base HTTP URL of the sandbox (e.g. http://127.0.0.1:4010)
+    value: ${{ steps.start.outputs.http-url }}
+  smtp-host:
+    description: SMTP host
+    value: ${{ steps.start.outputs.smtp-host }}
+  smtp-port:
+    description: SMTP port
+    value: ${{ steps.start.outputs.smtp-port }}
+
+runs:
+  using: composite
+  steps:
+    - id: install
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        if [ "${INPUT_VERSION}" = "latest" ]; then
+          release_json="$(curl -fsSL https://api.github.com/repos/Aeomar999/CommPit/releases/latest)"
+        else
+          release_json="$(curl -fsSL "https://api.github.com/repos/Aeomar999/CommPit/releases/tags/${INPUT_VERSION}")"
+        fi
+        os="$(uname -s)"
+        arch="$(uname -m)"
+        case "${os}/${arch}" in
+          Linux/x86_64) want_os="Linux"; want_arch="x86_64" ;;
+          Linux/aarch64|Linux/arm64) want_os="Linux"; want_arch="arm64" ;;
+          Darwin/x86_64) want_os="Darwin"; want_arch="x86_64" ;;
+          Darwin/arm64) want_os="Darwin"; want_arch="x86_64" ;; # no arm64 build; Rosetta runs the x86_64 binary
+          MINGW*/x86_64|MSYS*/x86_64|CYGWIN*/x86_64) want_os="Windows"; want_arch="x86_64" ;;
+          *) echo "unsupported platform ${os}/${arch}" >&2; exit 1 ;;
+        esac
+        export WANT_OS="${want_os}" WANT_ARCH="${want_arch}"
+        url="$(echo "${release_json}" | python3 -c 'import json,os,sys; assets=json.load(sys.stdin)["assets"]; cands=[a["browser_download_url"] for a in assets if os.environ["WANT_OS"] in a["name"] and os.environ["WANT_ARCH"] in a["name"]]; print(cands[0] if cands else "")')"
+        if [ -z "${url}" ]; then
+          echo "no mocksms asset for ${want_os}/${want_arch} in this release" >&2
+          exit 1
+        fi
+        mkdir -p "${RUNNER_TEMP}/mocksms"
+        cd "${RUNNER_TEMP}/mocksms"
+        curl -fsSL -o pkg "${url}"
+        case "${url}" in
+          *.tar.gz) tar xzf pkg ;;
+          *.zip) unzip -o -q pkg ;;
+          *) echo "unknown archive type: ${url}" >&2; exit 1 ;;
+        esac
+        rm -f pkg
+        echo "dir=${RUNNER_TEMP}/mocksms" >> "$GITHUB_OUTPUT"
+
+    - id: start
+      shell: bash
+      env:
+        INPUT_HTTP_PORT: ${{ inputs.http-port }}
+        INPUT_SMTP_PORT: ${{ inputs.smtp-port }}
+        INPUT_OTP_CODE: ${{ inputs.otp-code }}
+        INPUT_DATA_DIR: ${{ inputs.data-dir }}
+      run: |
+        set -euo pipefail
+        bindir="${RUNNER_TEMP}/mocksms"
+        datadir="${INPUT_DATA_DIR:-${RUNNER_TEMP}/mocksms-data}"
+        mkdir -p "${datadir}"
+        bin="$(find "${bindir}" -maxdepth 1 -type f -name 'mocksms*' ! -name '*.tar.gz' ! -name '*.zip' | head -n 1)"
+        if [ -z "${bin}" ]; then
+          echo "mocksms binary not found in ${bindir}" >&2
+          ls -la "${bindir}" >&2 || true
+          exit 1
+        fi
+        chmod +x "${bin}"
+        "${bin}" --otp-code "${INPUT_OTP_CODE}" --port "${INPUT_HTTP_PORT}" --smtp-port "${INPUT_SMTP_PORT}" --data-dir "${datadir}" serve >"${RUNNER_TEMP}/mocksms.log" 2>&1 &
+        echo $! > "${RUNNER_TEMP}/mocksms.pid"
+        for i in $(seq 1 50); do
+          if curl -fsS "http://127.0.0.1:${INPUT_HTTP_PORT}/api/v1/healthz" >/dev/null 2>&1; then
+            break
+          fi
+          sleep 0.2
+          if [ "$i" = "50" ]; then
+            echo "mocksms did not start; log:" >&2
+            cat "${RUNNER_TEMP}/mocksms.log" >&2 || true
+            exit 1
+          fi
+        done
+        echo "http-url=http://127.0.0.1:${INPUT_HTTP_PORT}" >> "$GITHUB_OUTPUT"
+        echo "smtp-host=127.0.0.1" >> "$GITHUB_OUTPUT"
+        echo "smtp-port=${INPUT_SMTP_PORT}" >> "$GITHUB_OUTPUT"
