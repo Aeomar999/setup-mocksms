@@ -63,7 +63,7 @@ runs:
           *) echo "unsupported platform ${os}/${arch}" >&2; exit 1 ;;
         esac
         export WANT_OS="${want_os}" WANT_ARCH="${want_arch}"
-        url="$(echo "${release_json}" | python3 -c 'import json,os,sys; assets=json.load(sys.stdin)["assets"]; cands=[a["browser_download_url"] for a in assets if os.environ["WANT_OS"] in a["name"] and os.environ["WANT_ARCH"] in a["name"]]; print(cands[0] if cands else "")')"
+        url="$(echo "${release_json}" | python3 -c 'import json,os,sys; assets=json.load(sys.stdin)["assets"]; cands=[a["browser_download_url"] for a in assets if os.environ["WANT_OS"] in a["name"] and os.environ["WANT_ARCH"] in a["name"] and (a["name"].endswith(".tar.gz") or a["name"].endswith(".zip"))]; print(cands[0] if cands else "")')"
         if [ -z "${url}" ]; then
           echo "no mocksms asset for ${want_os}/${want_arch} in this release" >&2
           exit 1
